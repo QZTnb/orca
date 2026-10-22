@@ -74,6 +74,57 @@ async function transcriptFile(content: string): Promise<string> {
   return filePath
 }
 
+function messagesOf(
+  result: { messages: NativeChatMessage[] } | { error: string }
+): NativeChatMessage[] {
+  if (!('messages' in result)) {
+    throw new Error(result.error)
+  }
+  return result.messages
+}
+
+/** Writes all but the last record, then appends the last one after the watcher's first snapshot. */
+async function appendLastAfterSnapshot(records: object[]): Promise<NativeChatMessage[]> {
+  const filePath = await transcriptFile(lines(...records.slice(0, -1)))
+  const received: NativeChatMessage[] = []
+  const subscription = await subscribeNativeChatTranscript({
+    agent: 'claude',
+    sessionId: 's',
+    filePath,
+    initialLimit: 40,
+    onInitialSnapshot: (messages) => received.push(...messages),
+    onAppend: (messages) => received.push(...messages),
+    debounceMs: 5,
+    reconciliationIntervalMs: 20
+  })
+  try {
+    await expect.poll(() => received.length).toBe(records.length - 1)
+    await appendFile(filePath, lines(...records.slice(-1)))
+    await expect.poll(() => received.length).toBe(records.length)
+    return received
+  } finally {
+    subscription.unsubscribe()
+  }
+}
+
+// Claude Code writes the prompt, then its image companion, at one time; folding pairs them by it.
+const imagePrompt = (at: string): object => ({
+  type: 'user',
+  uuid: 'image-prompt',
+  timestamp: at,
+  message: { role: 'user', content: [{ type: 'text', text: 'look at this [Image #1]' }] }
+})
+const imageCompanion = (at: string): object => ({
+  type: 'user',
+  uuid: 'image-companion',
+  isMeta: true,
+  timestamp: at,
+  message: {
+    role: 'user',
+    content: [{ type: 'text', text: '[Image: source: /tmp/orca-paste-a.png]' }]
+  }
+})
+
 /** What the chat draws: the prompt after the tool run, with the call holding its result. */
 function expectPromptAfterToolRun(messages: NativeChatMessage[]): void {
   const rows = projectNativeChatTranscriptMessages(messages)
@@ -144,33 +195,60 @@ describe('transcript rows keep file order', () => {
     ])
   })
 
-  // Claude Code writes the prompt, then its image companion, at one time; folding pairs them by it.
   it('keeps a pasted-image prompt and its companion row on their shared timestamp', async () => {
     const at = '2026-10-21T07:04:59.367Z'
-    const prompt = {
-      type: 'user',
-      uuid: 'image-prompt',
-      timestamp: at,
-      message: { role: 'user', content: [{ type: 'text', text: 'look at this [Image #1]' }] }
-    }
-    const companion = {
-      type: 'user',
-      uuid: 'image-companion',
-      isMeta: true,
-      timestamp: at,
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: '[Image: source: /tmp/orca-paste-a.png]' }]
-      }
-    }
-    const filePath = await transcriptFile(lines(prompt, companion))
-    const result = await readNativeChatTranscript('claude', 's', { filePath })
-    if (!('messages' in result)) {
-      throw new Error(result.error)
-    }
-    expect(result.messages.map((message) => [message.id, message.timestamp])).toEqual([
+    const filePath = await transcriptFile(lines(imagePrompt(at), imageCompanion(at)))
+    const messages = messagesOf(await readNativeChatTranscript('claude', 's', { filePath }))
+    expect(messages.map((message) => [message.id, message.timestamp])).toEqual([
       ['image-prompt', Date.parse(at)],
       ['image-companion', Date.parse(at)]
+    ])
+  })
+
+  // Rows above that share the pair's time move first; the pair must still share one time.
+  it.each([
+    [
+      'full read',
+      async (records: object[]) =>
+        messagesOf(
+          await readNativeChatTranscript('claude', 's', {
+            filePath: await transcriptFile(lines(...records))
+          })
+        )
+    ],
+    [
+      'tail read',
+      async (records: object[]) =>
+        messagesOf(
+          await readNativeChatTranscriptTail({
+            agent: 'claude',
+            sessionId: 's',
+            filePath: await transcriptFile(lines(...records)),
+            limit: 40
+          })
+        )
+    ],
+    ['companion appended after the snapshot', appendLastAfterSnapshot]
+  ])('keeps a pasted-image pair together below moved rows (%s)', async (_name, read) => {
+    const at = '2026-10-21T07:04:59.367Z'
+    const assistant = (uuid: string): object => ({
+      type: 'assistant',
+      uuid,
+      timestamp: at,
+      message: { role: 'assistant', stop_reason: null, content: [{ type: 'text', text: uuid }] }
+    })
+    const messages = await read([
+      assistant('a-1'),
+      assistant('a-2'),
+      imagePrompt(at),
+      imageCompanion(at)
+    ])
+    const t = Date.parse(at)
+    expect(messages.map((message) => [message.id, message.timestamp])).toEqual([
+      ['a-1', t],
+      ['a-2', t + 1],
+      ['image-prompt', t + 2],
+      ['image-companion', t + 2]
     ])
   })
 
