@@ -252,6 +252,23 @@ describe('transcript rows keep file order', () => {
     ])
   })
 
+  // Only an image pair shares a time; ids would order other tied user rows.
+  it('moves a tied user row outside an image pair below the user row above it', async () => {
+    const at = '2026-10-21T07:04:59.367Z'
+    const prompt = (uuid: string): object => ({
+      type: 'user',
+      uuid,
+      timestamp: at,
+      message: { role: 'user', content: [{ type: 'text', text: uuid }] }
+    })
+    const filePath = await transcriptFile(lines(prompt('z-first'), prompt('a-second')))
+    const messages = messagesOf(await readNativeChatTranscript('claude', 's', { filePath }))
+    expect(messages.map((message) => [message.id, message.timestamp])).toEqual([
+      ['z-first', Date.parse(at)],
+      ['a-second', Date.parse(at) + 1]
+    ])
+  })
+
   it('places a mid-turn prompt appended after the initial snapshot', async () => {
     const filePath = await transcriptFile(lines(PROMPT, TOOL_CALL, TOOL_RESULT))
     const received: NativeChatMessage[] = []
