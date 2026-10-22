@@ -101,6 +101,79 @@ describe('transcript rows keep file order', () => {
     }
   )
 
+  // A CLI that stamps a response's thinking and answer rows alike; id order would put the answer first.
+  it.each([
+    ['full read', (filePath: string) => readNativeChatTranscript('claude', 's', { filePath })],
+    [
+      'tail read',
+      (filePath: string) =>
+        readNativeChatTranscriptTail({ agent: 'claude', sessionId: 's', filePath, limit: 40 })
+    ]
+  ])('keeps rows that share one timestamp in file order (%s)', async (_name, read) => {
+    const at = '2026-10-21T14:47:08.596Z'
+    const thinking = {
+      type: 'assistant',
+      uuid: 'z-thinking',
+      timestamp: at,
+      message: {
+        role: 'assistant',
+        stop_reason: null,
+        content: [{ type: 'thinking', thinking: 'plan' }]
+      }
+    }
+    const answer = {
+      type: 'assistant',
+      uuid: 'a-answer',
+      parentUuid: 'z-thinking',
+      timestamp: at,
+      message: {
+        role: 'assistant',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'done' }]
+      }
+    }
+    const filePath = await transcriptFile(lines(PROMPT, thinking, answer))
+    const result = await read(filePath)
+    if (!('messages' in result)) {
+      throw new Error(result.error)
+    }
+    expect(projectNativeChatTranscriptMessages(result.messages).map((row) => row.id)).toEqual([
+      'u-1',
+      'z-thinking',
+      'a-answer'
+    ])
+  })
+
+  // Claude Code writes the prompt, then its image companion, at one time; folding pairs them by it.
+  it('keeps a pasted-image prompt and its companion row on their shared timestamp', async () => {
+    const at = '2026-10-21T07:04:59.367Z'
+    const prompt = {
+      type: 'user',
+      uuid: 'image-prompt',
+      timestamp: at,
+      message: { role: 'user', content: [{ type: 'text', text: 'look at this [Image #1]' }] }
+    }
+    const companion = {
+      type: 'user',
+      uuid: 'image-companion',
+      isMeta: true,
+      timestamp: at,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '[Image: source: /tmp/orca-paste-a.png]' }]
+      }
+    }
+    const filePath = await transcriptFile(lines(prompt, companion))
+    const result = await readNativeChatTranscript('claude', 's', { filePath })
+    if (!('messages' in result)) {
+      throw new Error(result.error)
+    }
+    expect(result.messages.map((message) => [message.id, message.timestamp])).toEqual([
+      ['image-prompt', Date.parse(at)],
+      ['image-companion', Date.parse(at)]
+    ])
+  })
+
   it('places a mid-turn prompt appended after the initial snapshot', async () => {
     const filePath = await transcriptFile(lines(PROMPT, TOOL_CALL, TOOL_RESULT))
     const received: NativeChatMessage[] = []
