@@ -279,3 +279,11 @@ export function createAgentInterruptInference({
     }
   }
 }
+
+/** A typed key's interrupt inference, for surfaces that write the key straight to the runtime. */
+export function inferInterruptFromDirectInput(
+  deps: AgentInterruptInferenceDeps,
+  intent: AgentInterruptInputIntent
+): void {
+  void createAgentInterruptInference(deps).observeInputIntent(intent)
+}
